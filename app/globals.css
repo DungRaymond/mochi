@@ -11,3 +11,8 @@ body {
   user-select: none;
   font-family: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
 }
+
+html, body {
+  scrollbar-width: none; /* Firefox */
+  overflow: hidden;
+}
