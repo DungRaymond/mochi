@@ -20,20 +20,46 @@ export default function CapturePage() {
   const [showConfirmExit, setShowConfirmExit] = useState(false);
   const [exitCountDown, setExitCountDown] = useState(5);
 
-  // KÍCH HOẠT LIVE VIEW (Webcam ảo từ systemd service)
+  // LOGIC NHẬN DIỆN LIVE VIEW (Webcam ảo từ v4l2loopback)
   useEffect(() => {
     async function setupLiveView() {
       try {
+        // Yêu cầu quyền trước để có thể lấy danh sách tên thiết bị
+        await navigator.mediaDevices.getUserMedia({ video: true });
+        
+        // Lấy danh sách thiết bị video
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter(device => device.kind === 'videoinput');
+        
+        console.log("Tìm thấy các thiết bị:", videoDevices);
+
+        // Tìm thiết bị có tên "Mochi" hoặc "GPhoto2", nếu không thấy thì lấy cái đầu tiên
+        const targetDevice = videoDevices.find(d => 
+          d.label.toLowerCase().includes('mochi') || 
+          d.label.toLowerCase().includes('gphoto2')
+        ) || videoDevices[0];
+
+        if (!targetDevice) {
+          console.error("Không tìm thấy bất kỳ nguồn video nào!");
+          return;
+        }
+
         const stream = await navigator.mediaDevices.getUserMedia({ 
-          video: { width: 1280, height: 720 } 
+          video: { 
+            deviceId: { exact: targetDevice.deviceId },
+            width: { ideal: 1280 }, 
+            height: { ideal: 720 } 
+          } 
         });
+
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
         }
       } catch (err) {
-        console.error("Không tìm thấy webcam ảo. Đảm bảo mochi-liveview service đang chạy.", err);
+        console.error("Lỗi khởi động Live View:", err);
       }
     }
+
     setupLiveView();
 
     const savedName = localStorage.getItem('customerName');
@@ -65,7 +91,7 @@ export default function CapturePage() {
     return () => clearTimeout(timer);
   }, [isCounting, count, showConfirmExit]);
 
-  // Bộ đếm nút Thoát
+  // Bộ đếm xác nhận thoát
   useEffect(() => {
     let timer;
     if (showConfirmExit && exitCountDown > 0) {
@@ -92,11 +118,11 @@ export default function CapturePage() {
       
       if (data.success) {
         if (data.folderId) setDriveFolderId(data.folderId);
-        // Hiển thị ảnh thật từ folder processed qua API photo
+        // Load ảnh thật từ thư mục processed
         setLastPhoto(`/api/photo/${fileName}?t=${ts}`);
       }
     } catch (err) {
-      console.error("Lỗi khi gọi API chụp ảnh:", err);
+      console.error("API Error:", err);
     } finally {
       setIsProcessing(false);
       setCount(2); 
@@ -105,13 +131,12 @@ export default function CapturePage() {
 
   const formatTime = (s) => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`;
 
-  // MÀN HÌNH QR CODE
   if (showQR) {
     const driveLink = driveFolderId ? `https://drive.google.com/drive/folders/${driveFolderId}` : '#';
     return (
       <div className="flex flex-col items-center justify-center min-h-screen bg-mochi-bg text-mochi-gold p-10 text-center font-serif">
         <h2 className="text-5xl font-black uppercase italic mb-4">Hoàn thành!</h2>
-        <p className="text-xl mb-10 opacity-80 uppercase tracking-widest">Quét mã để xem ảnh trên điện thoại</p>
+        <p className="text-xl mb-10 opacity-80 uppercase tracking-widest">Quét mã để tải bộ ảnh Mochi Film</p>
         <div className="bg-white p-6 rounded-xl shadow-2xl mb-10">
           <img 
             src={`https://chart.googleapis.com/chart?chs=300x300&cht=qr&chl=${encodeURIComponent(driveLink)}&choe=UTF-8`} 
@@ -121,7 +146,7 @@ export default function CapturePage() {
         </div>
         <button 
           onClick={() => { localStorage.removeItem('customerName'); router.push('/'); }} 
-          className="px-16 py-5 bg-mochi-gold text-mochi-bg font-black text-2xl uppercase rounded-full"
+          className="px-16 py-5 bg-mochi-gold text-mochi-bg font-black text-2xl uppercase rounded-full shadow-lg active:scale-95 transition-transform"
         >
           Trở về trang chủ
         </button>
@@ -129,29 +154,28 @@ export default function CapturePage() {
     );
   }
 
-  // GIAO DIỆN CHÍNH
   return (
     <div className="flex flex-col h-screen max-h-screen bg-mochi-bg text-mochi-gold p-6 select-none overflow-hidden font-serif relative">
       <div className="flex justify-between items-end mb-4 border-b border-mochi-gold pb-2 flex-shrink-0">
-        <div className="text-xl font-black uppercase italic tracking-tighter italic">KH: {customerName}</div>
+        <div className="text-xl font-black uppercase italic tracking-tighter">KH: {customerName}</div>
         <div className="text-4xl font-black tabular-nums">{formatTime(sessionTimeLeft)}</div>
       </div>
 
       <div className="flex flex-1 gap-6 min-h-0"> 
-        {/* LIVE VIEW (LỚN) */}
-        <div className="flex-[4] relative border-2 border-mochi-gold bg-black rounded-sm overflow-hidden flex items-center justify-center">
+        {/* LIVE VIEW CHÍNH */}
+        <div className="flex-[4] relative border-2 border-mochi-gold bg-black rounded-sm overflow-hidden flex items-center justify-center shadow-inner">
           <video 
             ref={videoRef} 
             autoPlay 
             playsInline 
             muted
-            className="absolute inset-0 w-full h-full object-cover scale-x-[-1] grayscale-[30%] opacity-80" 
+            className="absolute inset-0 w-full h-full object-cover scale-x-[-1] grayscale-[20%] opacity-90" 
           />
           
-          {isCounting && <div className="z-10 text-[250px] font-black drop-shadow-2xl">{count}</div>}
+          {isCounting && <div className="z-10 text-[250px] font-black drop-shadow-[0_10px_10px_rgba(0,0,0,0.5)]">{count}</div>}
           
           {isProcessing && (
-            <div className="z-20 bg-mochi-gold text-mochi-bg px-10 py-5 font-black text-2xl uppercase shadow-2xl">
+            <div className="z-20 bg-mochi-gold text-mochi-bg px-10 py-5 font-black text-2xl uppercase shadow-[0_0_30px_rgba(0,0,0,0.5)]">
               Đang xử lý...
             </div>
           )}
@@ -159,57 +183,61 @@ export default function CapturePage() {
           {!isCounting && !isProcessing && !showConfirmExit && (
             <button 
               onClick={() => setIsCounting(true)} 
-              className="z-10 w-24 h-24 rounded-full border-4 border-mochi-gold bg-mochi-bg/20 flex items-center justify-center active:scale-90 transition-transform shadow-lg"
+              className="z-10 w-24 h-24 rounded-full border-4 border-mochi-gold bg-mochi-bg/10 flex items-center justify-center active:scale-90 transition-transform shadow-2xl"
             >
               <div className="w-16 h-16 rounded-full bg-mochi-gold"></div>
             </button>
           )}
         </div>
 
-        {/* GALLERY PREVIEW (NHỎ) */}
-        <div className="flex-[2] flex flex-col border-2 border-mochi-gold p-4 bg-black/20 overflow-hidden">
-          <div className="text-[10px] font-bold uppercase mb-4 border-b border-mochi-gold/30 pb-2 text-center tracking-[0.2em]">KẾT QUẢ</div>
+        {/* ẢNH PREVIEW CỦA KHÁCH */}
+        <div className="flex-[2] flex flex-col border-2 border-mochi-gold p-4 bg-black/10 overflow-hidden rounded-sm">
+          <div className="text-[10px] font-black uppercase mb-4 border-b border-mochi-gold/30 pb-2 text-center tracking-[0.3em] opacity-60">ẢNH VỪA CHỤP</div>
           
           <div className="flex-1 flex items-center justify-center overflow-hidden">
             {lastPhoto ? (
                 <img 
                     src={lastPhoto} 
                     alt="preview" 
-                    className="max-w-full max-h-full object-contain border-4 border-white shadow-xl animate-in fade-in duration-500" 
+                    className="max-w-full max-h-full object-contain border-[6px] border-white shadow-2xl animate-in zoom-in duration-500" 
                 />
             ) : (
-                <div className="text-[10px] uppercase opacity-20 text-center italic">Sẵn sàng</div>
+                <div className="text-[10px] uppercase opacity-20 text-center italic border border-dashed border-mochi-gold/20 p-10">Sẵn sàng chụp tấm đầu tiên</div>
             )}
           </div>
           
           <button 
             onClick={() => { setShowConfirmExit(true); setExitCountDown(5); }} 
-            className="mt-6 py-4 border-2 border-mochi-gold text-mochi-gold font-black text-xs uppercase flex-shrink-0 active:bg-mochi-gold active:text-mochi-bg transition-colors"
+            className="mt-6 py-4 border-2 border-mochi-gold text-mochi-gold font-black text-xs uppercase flex-shrink-0 active:bg-mochi-gold active:text-mochi-bg transition-all"
           >
             Kết thúc phiên
           </button>
         </div>
       </div>
 
-      {/* MODAL XÁC NHẬN KẾT THÚC */}
+      {/* MODAL XÁC NHẬN THOÁT (5S) */}
       {showConfirmExit && (
-        <div className="absolute inset-0 z-50 bg-black/95 flex items-center justify-center p-10">
-          <div className="max-w-xl w-full border-4 border-mochi-gold p-12 text-center bg-mochi-bg shadow-2xl">
-            <h2 className="text-4xl font-black uppercase italic mb-6">Kết thúc sớm?</h2>
-            <p className="mb-8 opacity-70">Nhấn đồng ý để lấy mã QR tải ảnh.</p>
+        <div className="absolute inset-0 z-50 bg-black/95 flex items-center justify-center p-10 animate-in fade-in duration-300">
+          <div className="max-w-xl w-full border-4 border-mochi-gold p-12 text-center bg-mochi-bg shadow-[0_0_50px_rgba(0,0,0,1)]">
+            <h2 className="text-4xl font-black uppercase italic mb-6 tracking-tighter">Kết thúc tại đây?</h2>
+            <p className="text-lg mb-10 opacity-70 uppercase font-medium leading-relaxed">Bạn sẽ nhận được mã QR<br/>để tải ảnh ngay lập tức.</p>
             <div className="flex flex-col gap-5">
               <button 
                 disabled={exitCountDown > 0} 
                 onClick={() => { setShowConfirmExit(false); setShowQR(true); }} 
-                className={`py-6 text-2xl font-black uppercase rounded-full ${exitCountDown > 0 ? 'bg-gray-800 text-gray-500' : 'bg-red-600 text-white shadow-lg'}`}
+                className={`py-6 text-2xl font-black uppercase rounded-full transition-all ${
+                  exitCountDown > 0 
+                  ? 'bg-gray-800 text-gray-500 cursor-not-allowed opacity-50' 
+                  : 'bg-red-600 text-white shadow-lg active:scale-95'
+                }`}
               >
-                {exitCountDown > 0 ? `Chờ xác nhận (${exitCountDown}s)` : 'Đồng ý & Xem QR'}
+                {exitCountDown > 0 ? `Chờ xác nhận (${exitCountDown}s)` : 'Đồng ý & Lấy QR'}
               </button>
               <button 
                 onClick={() => setShowConfirmExit(false)} 
-                className="py-6 text-2xl font-black uppercase text-mochi-gold border-2 border-mochi-gold rounded-full active:bg-mochi-gold active:text-mochi-bg"
+                className="py-6 text-2xl font-black uppercase text-mochi-gold border-2 border-mochi-gold rounded-full active:bg-mochi-gold active:text-mochi-bg transition-colors"
               >
-                Quay lại
+                Quay lại chụp tiếp
               </button>
             </div>
           </div>
