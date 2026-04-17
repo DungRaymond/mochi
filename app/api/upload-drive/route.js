@@ -1,104 +1,108 @@
 import { google } from 'googleapis';
 import { NextResponse } from 'next/server';
-import { exec } from 'child_process';
-import { promisify } from 'util';
+import { execa } from 'execa'; // Sử dụng Execa
 import path from 'path';
 import fs from 'fs';
 
-const execPromise = promisify(exec);
-
-// --- CẤU HÌNH ---
-const EXTERNAL_BASE_PATH = '/home/user/mochi_data'; // Thay 'user' bằng username của bạn
+// CẤU HÌNH ĐƯỜNG DẪN
+const EXTERNAL_BASE_PATH = '/home/user/mochi_data'; // Đổi 'user' thành username của bạn
 const KEY_FILE_PATH = path.join(process.cwd(), 'service-account.json');
 
 export async function POST(req) {
   try {
     const { customerName, folderName, fileName } = await req.json();
 
-    const rawDir = path.join(EXTERNAL_BASE_PATH, 'raw');
-    const processedDir = path.join(EXTERNAL_BASE_PATH, 'processed');
-    
-    if (!fs.existsSync(rawDir)) fs.mkdirSync(rawDir, { recursive: true });
-    if (!fs.existsSync(processedDir)) fs.mkdirSync(processedDir, { recursive: true });
-
-    const rawPath = path.join(rawDir, fileName);
-    const processedPath = path.join(processedDir, fileName);
+    const rawPath = path.join(EXTERNAL_BASE_PATH, 'raw', fileName);
+    const processedPath = path.join(EXTERNAL_BASE_PATH, 'processed', fileName);
     const overlayPath = path.join(process.cwd(), 'public/assets/frame.png');
 
-    // --- BƯỚC 1: GỌI GPHOTO2 CHỤP ẢNH THẬT ---
+    // Đảm bảo thư mục tồn tại
+    [path.join(EXTERNAL_BASE_PATH, 'raw'), path.join(EXTERNAL_BASE_PATH, 'processed')].forEach(dir => {
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    });
+
+    // --- BƯỚC 1: GIẢI PHÓNG VÀ CHỤP ẢNH (GPHOTO2) ---
     try {
-      // Giải phóng máy ảnh khỏi tiến trình hệ thống trước khi chụp
-      await execPromise('killall gvfs-gphoto2-volume-monitor || true');
-      
-      const captureCmd = `gphoto2 --capture-image-and-download --filename "${rawPath}"`;
-      await execPromise(captureCmd);
+      // killall gvfs để tránh "Device Busy"
+      await execa('killall', ['gvfs-gphoto2-volume-monitor'], { reject: false });
+
+      // Lệnh chụp bằng Execa (viết theo mảng tham số cho an toàn)
+      await execa('gphoto2', [
+        '--capture-image-and-download',
+        '--filename', rawPath
+      ]);
     } catch (err) {
-      console.error("Lỗi Gphoto2:", err);
-      return NextResponse.json({ success: false, error: "Máy ảnh không phản hồi" }, { status: 500 });
+      console.error("Gphoto2 Error:", err.stderr);
+      return NextResponse.json({ success: false, error: "Máy ảnh chưa sẵn sàng" }, { status: 500 });
     }
 
-    // --- BƯỚC 2: XỬ LÝ IMAGEMAGICK (FILTER RETRO VINTAGE) ---
-    // Giải thích các thông số:
-    // -resize 1200x: Co ảnh về 1200px ngang
-    // -sepia-tone 60%: Ngả vàng nâu cổ điển
-    // -modulate 100,70: Giữ độ sáng, giảm 30% độ bão hòa màu
-    // -attenuate 0.5 +noise Gaussian: Thêm hạt film (grain)
+    // --- BƯỚC 2: XỬ LÝ MÀU FILM RETRO VINTAGE (IMAGEMAGICK) ---
     try {
-      const magicCmd = `magick "${rawPath}" -resize 1200x \
-        -sepia-tone 60% \
-        -modulate 100,70 \
-        -contrast-stretch 2%x2% \
-        -attenuate 0.4 +noise Gaussian \
-        "${overlayPath}" -composite "${processedPath}"`;
-      
-      await execPromise(magicCmd);
+      await execa('magick', [
+        rawPath,
+        '-resize', '1200x',
+        '-sepia-tone', '60%',
+        '-modulate', '100,70',
+        '-contrast-stretch', '2%x2%',
+        '-attenuate', '0.4',
+        '+noise', 'Gaussian',
+        overlayPath,
+        '-composite',
+        processedPath
+      ]);
     } catch (err) {
-      console.error("Lỗi ImageMagick:", err);
-      fs.copyFileSync(rawPath, processedPath); // Backup nếu lỗi filter
+      console.error("ImageMagick Error:", err.stderr);
+      // Nếu lỗi thì copy ảnh gốc qua để không làm đứng web
+      fs.copyFileSync(rawPath, processedPath);
     }
 
-    // --- BƯỚC 3: GOOGLE DRIVE ---
+    // --- BƯỚC 3: UPLOAD DRIVE NGẦM ---
+    // Chúng ta không đợi upload để frontend nhận kết quả sớm
+    uploadTask(customerName, folderName, fileName, processedPath);
+
+    return NextResponse.json({ 
+      success: true, 
+      fileName: fileName,
+      message: "Success"
+    });
+
+  } catch (error) {
+    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+  }
+}
+
+// Hàm upload tách riêng (Background Task)
+async function uploadTask(customerName, folderName, fileName, filePath) {
+  try {
     const auth = new google.auth.GoogleAuth({
       keyFile: KEY_FILE_PATH,
       scopes: ['https://www.googleapis.com/auth/drive.file'],
     });
     const drive = google.drive({ version: 'v3', auth });
 
+    // Tìm hoặc tạo Folder
     let folderId;
-    const findFolder = await drive.files.list({
+    const res = await drive.files.list({
       q: `name='${folderName}' and mimeType='application/vnd.google-apps.folder' and trashed=false`,
       fields: 'files(id)',
     });
 
-    if (findFolder.data.files.length > 0) {
-      folderId = findFolder.data.files[0].id;
+    if (res.data.files.length > 0) {
+      folderId = res.data.files[0].id;
     } else {
-      const newFolder = await drive.files.create({
+      const folder = await drive.files.create({
         resource: { name: folderName, mimeType: 'application/vnd.google-apps.folder' },
         fields: 'id',
       });
-      folderId = newFolder.data.id;
+      folderId = folder.data.id;
     }
 
-    // Upload file ngầm
-    const media = {
-      mimeType: 'image/jpeg',
-      body: fs.createReadStream(processedPath),
-    };
+    // Upload file
     await drive.files.create({
       resource: { name: fileName, parents: [folderId] },
-      media: media,
-      fields: 'id',
+      media: { mimeType: 'image/jpeg', body: fs.createReadStream(filePath) },
     });
-
-    return NextResponse.json({ 
-      success: true, 
-      folderId: folderId,
-      fileName: fileName
-    });
-
-  } catch (error) {
-    console.error('API Error:', error);
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+  } catch (e) {
+    console.error("Drive Sync Error:", e);
   }
 }

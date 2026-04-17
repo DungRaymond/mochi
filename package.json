@@ -9,6 +9,7 @@
     "start": "next start"
   },
   "dependencies": {
+    "execa": "^9.6.1",
     "googleapis": "^171.4.0",
     "lucide-react": "^0.453.0",
     "next": "15.0.0",
